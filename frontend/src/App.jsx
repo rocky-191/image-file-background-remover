@@ -1,8 +1,15 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 
 // Cloudflare Workers API 地址（部署后填入）
 // 示例: https://image-bg-remover.your-account.workers.dev
 const API_BASE = import.meta.env.VITE_API_BASE || ''
+
+// 套餐配置
+const PACKAGES = [
+  { id: 'credits_3', name: '3次', credits: 3, price: 0.99, originalPrice: null },
+  { id: 'credits_10', name: '10次', credits: 10, price: 2.99, originalPrice: null },
+  { id: 'credits_50', name: '50次', credits: 50, price: 12.99, originalPrice: null },
+]
 
 function App() {
   const [image, setImage] = useState(null)
@@ -16,10 +23,98 @@ function App() {
   const [user, setUser] = useState(null)
   const [loadingUser, setLoadingUser] = useState(true)
 
+  // 购买弹窗状态
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false)
+  const [selectedPackage, setSelectedPackage] = useState(null)
+  const [purchasing, setPurchasing] = useState(false)
+  const [paypalLoaded, setPaypalLoaded] = useState(false)
+  const paypalRef = useRef(null)
+
   // 检查用户登录状态
   useEffect(() => {
     checkUserStatus()
   }, [])
+
+  // 加载 PayPal SDK
+  useEffect(() => {
+    if (showPurchaseModal && !paypalLoaded) {
+      const clientId = import.meta.env.VITE_PAYPAL_CLIENT_ID
+      if (!clientId) {
+        console.warn('PayPal Client ID 未配置')
+        return
+      }
+      
+      const script = document.createElement('script')
+      script.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&currency=USD`
+      script.onload = () => setPaypalLoaded(true)
+      script.onerror = () => console.error('PayPal SDK 加载失败')
+      document.body.appendChild(script)
+    }
+  }, [showPurchaseModal])
+
+  // 渲染 PayPal 按钮
+  useEffect(() => {
+    if (showPurchaseModal && selectedPackage && paypalLoaded && window.paypal && paypalRef.current) {
+      // 清除旧的按钮
+      paypalRef.current.innerHTML = ''
+      
+      window.paypal.Buttons({
+        style: {
+          layout: 'vertical',
+          color: 'blue',
+          shape: 'rect',
+          label: 'pay',
+        },
+        createOrder: (data, actions) => {
+          return actions.order.create({
+            purchase_units: [{
+              description: `Image Background Remover - ${selectedPackage.name}`,
+              amount: {
+                currency_code: 'USD',
+                value: selectedPackage.price.toFixed(2),
+              },
+            }],
+          })
+        },
+        onApprove: async (data, actions) => {
+          setPurchasing(true)
+          try {
+            const captureResult = await actions.order.capture()
+            // 调用后端确认订单
+            const response = await fetch(`${API_BASE}/api/paypal/capture`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({
+                orderID: data.orderID,
+                packageId: selectedPackage.id,
+                credits: selectedPackage.credits,
+              }),
+            })
+            
+            if (response.ok) {
+              const result = await response.json()
+              setCredits(prev => prev + selectedPackage.credits)
+              alert(`购买成功！已获得 ${selectedPackage.credits} 次处理次数`)
+              setShowPurchaseModal(false)
+              setSelectedPackage(null)
+            } else {
+              throw new Error('订单确认失败')
+            }
+          } catch (err) {
+            console.error('支付确认失败:', err)
+            alert('支付确认失败，请联系客服处理')
+          } finally {
+            setPurchasing(false)
+          }
+        },
+        onError: (err) => {
+          console.error('PayPal error:', err)
+          alert('支付失败，请重试')
+        },
+      }).render(paypalRef.current)
+    }
+  }, [showPurchaseModal, selectedPackage, paypalLoaded])
 
   const checkUserStatus = async () => {
     if (!API_BASE) {
@@ -35,7 +130,7 @@ function App() {
       
       if (data.loggedIn) {
         setUser(data.user)
-        setCredits(data.usage.remaining)
+        setCredits(data.usage?.remaining || 0)
       } else {
         setCredits(3) // 未登录用户每天 3 次
       }
@@ -145,7 +240,19 @@ function App() {
 
   // 去除背景 - 调用真实 API
   const removeBackground = async () => {
-    if (!image || credits <= 0) return
+    if (!image) return
+    
+    // 需要登录才能使用
+    if (!user) {
+      alert('请先登录后再使用')
+      return
+    }
+    
+    // 检查次数
+    if (credits <= 0) {
+      setShowPurchaseModal(true)
+      return
+    }
     
     setLoading(true)
     setError('')
@@ -178,6 +285,11 @@ function App() {
 
         if (!apiResponse.ok) {
           const errorData = await apiResponse.json()
+          if (errorData.error === '次数用完') {
+            setCredits(0)
+            setShowPurchaseModal(true)
+            throw new Error('今日免费次数已用完，请购买更多次数')
+          }
           throw new Error(errorData.error || 'API 调用失败')
         }
 
@@ -211,6 +323,17 @@ function App() {
     setImage(null)
     setResult(null)
     setError('')
+  }
+
+  // 打开购买弹窗
+  const openPurchaseModal = (pkg = null) => {
+    if (!user) {
+      alert('请先登录后再购买')
+      handleLogin()
+      return
+    }
+    setSelectedPackage(pkg || PACKAGES[1]) // 默认选10次
+    setShowPurchaseModal(true)
   }
 
   return (
@@ -349,9 +472,9 @@ function App() {
                 <>
                   <button
                     onClick={removeBackground}
-                    disabled={loading || credits <= 0}
+                    disabled={loading}
                     className={`px-8 py-3 rounded-lg font-medium transition-colors ${
-                      loading || credits <= 0
+                      loading
                         ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                         : 'bg-blue-500 text-white hover:bg-blue-600'
                     }`}
@@ -401,8 +524,90 @@ function App() {
               登录后可获得更多次数
             </p>
           )}
+          {credits === 0 && user && (
+            <button
+              onClick={() => openPurchaseModal()}
+              className="mt-2 px-4 py-2 bg-orange-500 text-white text-sm rounded-lg hover:bg-orange-600 transition-colors"
+            >
+              购买更多次数
+            </button>
+          )}
+          {credits > 0 && credits < 3 && user && (
+            <button
+              onClick={() => openPurchaseModal()}
+              className="mt-2 px-4 py-2 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              购买更多次数
+            </button>
+          )}
         </div>
       </main>
+
+      {/* 购买弹窗 */}
+      {showPurchaseModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-semibold text-gray-800">购买处理次数</h2>
+              <button
+                onClick={() => {
+                  setShowPurchaseModal(false)
+                  setSelectedPackage(null)
+                }}
+                className="text-gray-400 hover:text-gray-600 text-2xl"
+              >
+                ×
+              </button>
+            </div>
+            
+            {/* 套餐选择 */}
+            <div className="space-y-3 mb-6">
+              {PACKAGES.map((pkg) => (
+                <div
+                  key={pkg.id}
+                  onClick={() => setSelectedPackage(pkg)}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-colors ${
+                    selectedPackage?.id === pkg.id
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <span className="font-semibold text-gray-800">{pkg.name}</span>
+                      <span className="text-gray-500 ml-2">{pkg.credits} 次处理</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xl font-bold text-blue-600">${pkg.price}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            {/* PayPal 按钮 */}
+            <div className="mb-4">
+              {purchasing ? (
+                <div className="text-center py-4">
+                  <div className="animate-spin text-3xl mb-2">⏳</div>
+                  <p className="text-gray-500">处理中...</p>
+                </div>
+              ) : (
+                <>
+                  {!selectedPackage && (
+                    <p className="text-center text-gray-500 py-4">请选择套餐</p>
+                  )}
+                  <div ref={paypalRef} className={!selectedPackage ? 'hidden' : ''}></div>
+                </>
+              )}
+            </div>
+            
+            <p className="text-center text-xs text-gray-400">
+              支付成功后次数将自动添加到您的账户
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="fixed bottom-0 left-0 right-0 bg-white border-t py-4">
