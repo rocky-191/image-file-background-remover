@@ -17,9 +17,9 @@ JWT_SECRET = "change-this-to-a-secure-random-string"
 # Remove.bg API Key（必需）
 # REMOVE_BG_API_KEY = ""
 
-# PayPal API Credentials（沙盒/生产）
-PAYPAL_CLIENT_ID = "AZG8OGqJwSUCJ7CwLT3iSR51GZ4sU3VJJCTLnhG8IU1YDYNqs0h4x-S2RRCaFFXCfL00lIf2isEITjLD"
-PAYPAL_CLIENT_SECRET = "EFT8po3uuyg60KsInkSWXd1EBHuu0H8ctpAFKdgAEErX5ERxdMlmAAweCFox_-rHccSi6ZXufUi_-imD"
+# PayPal API Credentials（在 Cloudflare Worker 设置中配置环境变量）
+# PAYPAL_CLIENT_ID = ""
+# PAYPAL_CLIENT_SECRET = ""
 
 # D1 数据库（运行 wrangler d1 create image-bg-remover-db 后填入）
 # [[d1_databases]]
